@@ -13,14 +13,14 @@ PHOTOS_DIR = 'test_photos'
 async def archive(request):
     archive_hash = request.match_info['archive_hash']
 
+    if not os.path.exists(f'{PHOTOS_DIR}/{archive_hash}'):
+        raise web.HTTPNotFound(text='Архив не существует или был удален')
+
     response = web.StreamResponse()
     response.headers['Content-Type'] = 'application/zip'
     response.headers["Content-Disposition"] = (
         f'attachment; filename="photos_{archive_hash}.zip"'
     )
-
-    if not os.path.exists(f'{PHOTOS_DIR}/{archive_hash}'):
-        raise web.HTTPNotFound(text='Архив не существует или был удален')
 
     await response.prepare(request)
 
@@ -28,26 +28,48 @@ async def archive(request):
         'wsl', 'bash', '-c',
         f'cd "{PHOTOS_DIR}/{archive_hash}" && zip -r - .',
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.PIPE
     )
+
     try:
         while True:
-            chunk = await process.stdout.read(CHUNK_SIZE)
+            try:
+                chunk = await asyncio.wait_for(
+                    process.stdout.read(CHUNK_SIZE),
+                    timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                if request.transport.is_closing():
+                    break
+                continue
+
             if not chunk:
                 break
 
             logger.info('Sending archive chunk ...')
-            await response.write(chunk)
 
-    except (ConnectionResetError, asyncio.CancelledError):
-        logger.warning('Download was interrupted')
+            try:
+                await response.write(chunk)
+            except (ConnectionResetError, ConnectionError):
+                logger.warning('Client disconnected')
+                break
+
+    except asyncio.CancelledError:
+        logger.warning('Task was cancelled')
 
     finally:
-        logger.info('Stopping zip process...')
         if process.returncode is None:
-            process.kill()
-            await process.wait()
-        logger.info('Zip process stopped')
+            try:
+                process.stdin.write(b'\x03')
+                await process.stdin.drain()
+            except:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
 
     return response
 
