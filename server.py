@@ -1,4 +1,5 @@
 import aiofiles
+import argparse
 import asyncio
 import logging
 import os
@@ -6,14 +7,20 @@ import os
 from aiohttp import web
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--path', default='test_photos', help='Указать путь до директории с папками фото')
+parser.add_argument('--delay', action='store_true', help='Включить задержку ответа')
+parser.add_argument('--no_log', action='store_true', help='Отключить логирование')
+args = parser.parse_args()
+
+path_archives = args.path
 CHUNK_SIZE = 400 * 1024
-PHOTOS_DIR = 'test_photos'
 
 
 async def archive(request):
     archive_hash = request.match_info['archive_hash']
 
-    if not os.path.exists(f'{PHOTOS_DIR}/{archive_hash}'):
+    if not os.path.exists(f'{path_archives}/{archive_hash}'):
         raise web.HTTPNotFound(text='Архив не существует или был удален')
 
     response = web.StreamResponse()
@@ -26,7 +33,7 @@ async def archive(request):
 
     process = await asyncio.create_subprocess_exec(
         'wsl', 'bash', '-c',
-        f'cd "{PHOTOS_DIR}/{archive_hash}" && zip -r - .',
+        f'cd "{path_archives}/{archive_hash}" && zip -r - .',
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.PIPE
@@ -37,7 +44,7 @@ async def archive(request):
             try:
                 chunk = await asyncio.wait_for(
                     process.stdout.read(CHUNK_SIZE),
-                    timeout=1.0
+                    timeout=1
                 )
             except asyncio.TimeoutError:
                 if request.transport.is_closing():
@@ -55,21 +62,21 @@ async def archive(request):
                 logger.warning('Client disconnected')
                 break
 
+            if args.delay:
+                await asyncio.sleep(1)
+
     except asyncio.CancelledError:
         logger.warning('Task was cancelled')
 
     finally:
         if process.returncode is None:
             try:
-                process.stdin.write(b'\x03')
-                await process.stdin.drain()
-            except:
-                pass
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
+                process.terminate()
+                await asyncio.wait_for(process.communicate(), timeout=3)
+            except (ProcessLookupError, asyncio.TimeoutError):
+                logger.warning('Zip did not stop gracefully, killing...')
                 process.kill()
-                await process.wait()
+                await process.communicate()
 
     return response
 
@@ -87,6 +94,9 @@ if __name__ == '__main__':
         level=logging.INFO
     )
     logger = logging.getLogger(__name__)
+
+    if args.no_log:
+        logging.disable(logging.CRITICAL)
 
     app = web.Application()
     app.add_routes([
