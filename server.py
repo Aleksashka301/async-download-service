@@ -7,13 +7,6 @@ import os
 from aiohttp import web
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--path', default='test_photos', help='Указать путь до директории с папками фото')
-parser.add_argument('--delay', action='store_true', help='Включить задержку ответа')
-parser.add_argument('--no_log', action='store_true', help='Отключить логирование')
-args = parser.parse_args()
-
-path_archives = args.path
 CHUNK_SIZE = 400 * 1024
 
 
@@ -67,6 +60,7 @@ async def archive(request):
 
     except asyncio.CancelledError:
         logger.warning('Task was cancelled')
+        raise 
 
     finally:
         if process.returncode is None:
@@ -89,6 +83,13 @@ async def handle_index_page(request):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--path', default='test_photos', help='Указать путь до директории с папками фото')
+    parser.add_argument('--delay', action='store_true', help='Включить задержку ответа')
+    parser.add_argument('--no_log', action='store_true', help='Отключить логирование')
+    args = parser.parse_args()
+    path_archives = args.path
+
     logging.basicConfig(
         format= u'%(filename)s [line:%(lineno)d]# %(levelname)s [%(asctime)s] - %(message)s',
         level=logging.INFO
